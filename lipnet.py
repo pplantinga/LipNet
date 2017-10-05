@@ -3,9 +3,9 @@ from lipnet_model import Lipnet_Model
 from tensorflow.python.client import timeline
 
 testSpeakers = [1, 2, 20, 22]
-trainSpeakers = [i for i in range(1,35) if i not in testSpeakers and i != 21 and i != 8]
-dataDir = "../GRID/data"
-labelDir = "../GRID/trans"
+trainSpeakers = [i for i in range(1,35) if i not in testSpeakers and i != 21]
+dataDir = "mouth-data"
+labelDir = "mouth-label"
 
 m = Lipnet_Model(trainSpeakers, testSpeakers, dataDir, labelDir)
 

@@ -5,7 +5,9 @@ from glob import glob
 import numpy as np
 from random import shuffle, random
 from scipy import misc
-
+import sys
+import os.path
+import os
 
 def readVideo(filename):
 
@@ -22,11 +24,16 @@ def readVideo(filename):
 
     return np.array(frames, dtype=np.uint8)
 
-def readVideos(dataDir, speaker, names):
+def readVideos(dataDir, names):
 
     videos = []
     for name in names:
-        videos.append(readVideo(f"{dataDir}/s{speaker}/{name}_lips.avi"))
+        filename = f"{dataDir}/{name}.avi"
+        if os.path.isfile(filename):
+            videos.append(readVideo(filename))
+
+        else:
+            print(f"Doesn't exist: {filename}")
 
     return videos
 
@@ -34,9 +41,8 @@ def readLabels(labelDir, speakers):
 
     labels = {}
     for speaker in speakers:
-        labels[speaker] = {}
-        for filename in glob(f"{labelDir}/s{speaker}/*.align"):
-            name = filename[-12:-6]
+        for filename in glob(f"{labelDir}/s{speaker}_*.align"):
+            name = filename[len(labelDir) + 1:-6]
             words = []
             timings = []
             for line in open(filename):
@@ -46,7 +52,7 @@ def readLabels(labelDir, speakers):
                 if label != "sil" and label != "sp":
                     words.append(label)
                     timings.append((start, stop))
-            labels[speaker][name] = (words, timings)
+            labels[name] = (words, timings)
 
     return labels
 
@@ -67,6 +73,13 @@ def single_word(video, label):
     label = " ".join(label[0][startIndex:stopIndex+1])
 
     return video, label
+
+def update_progress(progress):
+    total = 30
+    intprog = int(round(progress * total))
+    sys.stdout.write("\r[{0}] {1:2.1f}%".format("#"*intprog + "-"*(total-intprog), progress * 100))
+    sys.stdout.flush()
+
 
 class Lipnet_Model():
     # Parameters
@@ -95,20 +108,19 @@ class Lipnet_Model():
         self.maxVidLen = 75
         self.minVidLen = 7
         self.maxLabelLen = 0
-        for sp in self.trainLabels.values():
-            for label, timings in sp.values():
-                label = " ".join(label)
+        for label, timings in self.trainLabels.values():
+            label = " ".join(label)
 
-                # Add all characters to set, plus double characters
-                prevChar = ""
-                for char in label:
-                    self.chars.add(char)
-                    if char == prevChar:
-                        self.chars.add(char + prevChar)
-                    prevChar = char
+            # Add all characters to set, plus double characters
+            prevChar = ""
+            for char in label:
+                self.chars.add(char)
+                if char == prevChar:
+                    self.chars.add(char + prevChar)
+                prevChar = char
 
-                if len(label) > self.maxLabelLen:
-                    self.maxLabelLen = len(label)
+            if len(label) > self.maxLabelLen:
+                self.maxLabelLen = len(label)
         
         self.char2index = {c:i for i, c in enumerate(self.chars)}
         self.index2char = {i:c for i, c in enumerate(self.chars)}
@@ -225,12 +237,7 @@ class Lipnet_Model():
         #return rnn.DropoutWrapper(rnn.GRUCell(self.hidden_size), self.recurrent_keep_prob)
         return rnn.GRUCell(self.hidden_size)
 
-    def make_fd(self, index, names, labels, videos, train):
-
-        if train:
-            fd = {self.channel_keep_prob: 1. - self.channel_dropout}
-        else:
-            fd = {self.channel_keep_prob: 1.}
+    def make_fd(self, labels, names, videos, train):
 
         vidInput = np.zeros((self.batch_size, self.maxVidLen, 50, 100, 3), dtype=np.uint8)
         targets = np.zeros((self.batch_size, self.maxLabelLen), dtype=np.int32)
@@ -238,14 +245,16 @@ class Lipnet_Model():
         targetLens = []
 
         if train:
+            fd = {self.channel_keep_prob: 1. - self.channel_dropout}
             batch_size = self.batch_size // 2
         else:
+            fd = {self.channel_keep_prob: 1.}
             batch_size = self.batch_size
         
         # Actual video, then left-right flip
         for j in range(self.batch_size):
 
-            k = index * batch_size + j % batch_size
+            k = j % batch_size
             vid, label = videos[k], " ".join(labels[names[k]][0])
 
             if train:
@@ -291,20 +300,22 @@ class Lipnet_Model():
 
     def batchify(self, train=True):
 
-        labels = self.trainLabels if train else self.testLabels
+        # mirrored left-to-right
+        if train:
+            batch_size = self.batch_size // 2
+            labels = self.trainLabels
+        else:
+            batch_size = self.batch_size
+            labels = self.testLabels
 
-        for sp in labels:
-            names = list(labels[sp].keys())
-            shuffle(names)
+        names = list(labels.keys())
+        shuffle(names)
 
-            videos = readVideos(self.dataDir, sp, names)
+        for j in range(len(names) // batch_size):
 
-            # mirrored left-to-right
-            if train:
-                batch_size = self.batch_size // 2
-            else:
-                batch_size = self.batch_size
+            batch_names = names[j * batch_size : (j+1) * batch_size]
+            batch_videos = readVideos(self.dataDir, batch_names)
 
-            for i in range(len(names) // batch_size):
-                yield self.make_fd(i, names, labels[sp], videos, train)
+            update_progress( j * batch_size / len(names) )
+            yield self.make_fd(labels, batch_names, batch_videos, train)
 
